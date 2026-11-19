@@ -2,15 +2,20 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
+	"github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/lxc/config"
 	"github.com/canonical/lxd/shared/api"
 )
@@ -58,7 +63,7 @@ func (s *utilsTestSuite) TestGetExistingAliases() {
 		{Name: "baz"},
 	}
 
-	aliases := GetExistingAliases([]string{"bar", "foo", "other"}, images)
+	aliases := GetExistingAliases([]string{"bar", "foo", "other"}, "", images)
 	s.Exactly([]api.ImageAliasesEntry{images[0], images[1]}, aliases)
 }
 
@@ -69,8 +74,99 @@ func (s *utilsTestSuite) TestGetExistingAliasesEmpty() {
 		{Name: "baz"},
 	}
 
-	aliases := GetExistingAliases([]string{"other1", "other2"}, images)
+	aliases := GetExistingAliases([]string{"other1", "other2"}, "", images)
 	s.Exactly([]api.ImageAliasesEntry{}, aliases)
+}
+
+func (s *utilsTestSuite) TestGetExistingAliasesType() {
+	images := []api.ImageAliasesEntry{
+		{Name: "foo", Type: "container"},
+		{Name: "foo", Type: "virtual-machine"},
+		{Name: "bar", Type: "container"},
+	}
+
+	aliases := GetExistingAliases([]string{"bar", "foo"}, "container", images)
+	s.Exactly([]api.ImageAliasesEntry{images[0], images[2]}, aliases)
+}
+
+func (s *utilsTestSuite) TestGetExistingAliasesLegacyMicroVM() {
+	images := []api.ImageAliasesEntry{
+		{Name: "foo", Type: "microvm", Target: "legacy-image"},
+		{Name: "foo", Type: "virtual-machine", Target: "vm-image"},
+	}
+
+	for _, imageType := range []string{"container", "microvm"} {
+		aliases := GetExistingAliases([]string{"foo"}, imageType, images)
+		s.Exactly([]api.ImageAliasesEntry{{Name: "foo", Type: "container", Target: "legacy-image"}}, aliases)
+	}
+
+	aliases := GetExistingAliases([]string{"foo"}, "virtual-machine", images)
+	s.Exactly([]api.ImageAliasesEntry{images[1]}, aliases)
+	s.Equal("microvm", images[0].Type)
+}
+
+func TestEnsureImageAliasesLegacy(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		oldType  string
+		newType  string
+		wantType string
+	}{
+		{name: "microvm to container", oldType: "microvm", newType: "container", wantType: "container"},
+		{name: "VM to container", oldType: "virtual-machine", newType: "container", wantType: "virtual-machine"},
+		{name: "container to VM", oldType: "container", newType: "virtual-machine", wantType: "container"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target := "old-image"
+			aliasExists := true
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				var metadata any = map[string]any{}
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/1.0":
+					metadata = api.Server{}
+				case r.Method == http.MethodGet && r.URL.Path == "/1.0/images/aliases":
+					metadata = []api.ImageAliasesEntry{{Name: "published", Type: tt.oldType, Target: target}}
+				case r.Method == http.MethodDelete && r.URL.Path == "/1.0/images/aliases/published":
+					aliasExists = false
+				case r.Method == http.MethodPost && r.URL.Path == "/1.0/images/aliases":
+					if aliasExists {
+						http.Error(w, "Alias already exists", http.StatusConflict)
+						return
+					}
+
+					var alias api.ImageAliasesPost
+					err := json.NewDecoder(r.Body).Decode(&alias)
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+
+					target = alias.Target
+					aliasExists = true
+				default:
+					http.Error(w, "Unexpected alias request", http.StatusBadRequest)
+					return
+				}
+
+				err := json.NewEncoder(w).Encode(map[string]any{"type": "sync", "status": "Success", "status_code": 200, "metadata": metadata})
+				if err != nil {
+					t.Errorf("Failed encoding response: %v", err)
+				}
+			}))
+			defer server.Close()
+			client, err := lxd.ConnectLXD(server.URL, nil)
+			require.NoError(t, err)
+
+			common, err := GetCommonAliases(client, tt.newType, api.ImageAlias{Name: "published"})
+			require.NoError(t, err)
+			require.Equal(t, []api.ImageAliasesEntry{{Name: "published", Type: tt.wantType, Target: "old-image"}}, common)
+			err = ensureImageAliases(client, []api.ImageAlias{{Name: "published"}}, "new-image", tt.newType)
+			require.NoError(t, err)
+			require.True(t, aliasExists)
+			require.Equal(t, "new-image", target)
+		})
+	}
 }
 
 func (s *utilsTestSuite) TestStructHasFields() {
