@@ -521,6 +521,11 @@ func (c *ClusterTx) GetImageAlias(ctx context.Context, projectName string, image
 	return ids[0], matches[0], nil
 }
 
+// GetImageAliasTypes returns the image types for which an alias with the given name exists in the given project.
+func (c *ClusterTx) GetImageAliasTypes(ctx context.Context, projectName string, name string) ([]string, error) {
+	return cluster.GetImageAliasTypes(ctx, c.tx, projectName, name)
+}
+
 // RenameImageAlias renames the alias with the given ID.
 func (c *ClusterTx) RenameImageAlias(ctx context.Context, id int, name string) error {
 	q := "UPDATE images_aliases SET name=? WHERE id=?"
@@ -597,14 +602,18 @@ VALUES (?, ?, ?, (SELECT id FROM projects WHERE name = ?), (SELECT CASE type WHE
 }
 
 // UpdateImageAlias updates the alias with the given ID.
-func (c *ClusterTx) UpdateImageAlias(ctx context.Context, aliasID int, imageID int, desc string) error {
-	var aliasType, imageType int
+// If the target image has a different image type than the alias, the alias is moved to the target image's type when
+// allowTypeChange is true. Otherwise a Bad Request error is returned.
+func (c *ClusterTx) UpdateImageAlias(ctx context.Context, aliasID int, imageID int, desc string, allowTypeChange bool) error {
+	var aliasType, aliasProjectID int
+	var aliasName string
 
-	err := c.tx.QueryRowContext(ctx, "SELECT image_type FROM images_aliases WHERE id=?", aliasID).Scan(&aliasType)
+	err := c.tx.QueryRowContext(ctx, "SELECT image_type, project_id, name FROM images_aliases WHERE id=?", aliasID).Scan(&aliasType, &aliasProjectID, &aliasName)
 	if err != nil {
 		return err
 	}
 
+	var imageType int
 	err = c.tx.QueryRowContext(ctx, "SELECT type FROM images WHERE id=?", imageID).Scan(&imageType)
 	if err != nil {
 		return err
@@ -613,11 +622,22 @@ func (c *ClusterTx) UpdateImageAlias(ctx context.Context, aliasID int, imageID i
 	imageType = int(instancetype.Type(imageType).ImageType())
 
 	if aliasType != imageType {
-		return api.StatusErrorf(http.StatusBadRequest, "Cannot retarget alias to image type %q", instancetype.Type(imageType).String())
+		if !allowTypeChange {
+			return api.StatusErrorf(http.StatusBadRequest, "Cannot retarget alias to image type %q", instancetype.Type(imageType).String())
+		}
+
+		count, err := query.Count(ctx, c.tx, "images_aliases", "project_id=? AND name=? AND image_type=? AND id!=?", aliasProjectID, aliasName, imageType, aliasID)
+		if err != nil {
+			return err
+		}
+
+		if count > 0 {
+			return api.StatusErrorf(http.StatusConflict, "Alias %q already exists for image type %q", aliasName, instancetype.Type(imageType).String())
+		}
 	}
 
-	stmt := `UPDATE images_aliases SET image_id=?, description=? WHERE id=?`
-	_, err = c.tx.ExecContext(ctx, stmt, imageID, desc, aliasID)
+	stmt := `UPDATE images_aliases SET image_id=?, description=?, image_type=? WHERE id=?`
+	_, err = c.tx.ExecContext(ctx, stmt, imageID, desc, imageType, aliasID)
 	return err
 }
 

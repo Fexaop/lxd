@@ -118,10 +118,21 @@ func TestEntityPermissionURL_RoundTrip(t *testing.T) {
 		},
 		{
 			Name:        "Image alias",
+			URL:         "/1.0/images/container/aliases/ubuntu",
+			WantType:    TypeImageAlias,
+			WantProject: "default",
+			WantArgs: map[string]string{
+				"type": "container",
+				"name": "ubuntu",
+			},
+		},
+		{
+			Name:        "Legacy image alias",
 			URL:         "/1.0/images/aliases/ubuntu",
 			WantType:    TypeImageAlias,
 			WantProject: "default",
 			WantArgs: map[string]string{
+				"type": "",
 				"name": "ubuntu",
 			},
 		},

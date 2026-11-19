@@ -46,6 +46,9 @@ type ImageDownloadArgs struct {
 	Budget            int64
 	SourceProjectName string
 	UserRequested     bool
+
+	// Fingerprint pins a resolved local image and skips alias resolution.
+	Fingerprint string
 }
 
 // imageOperationLock acquires a lock for operating on an image and returns the unlock function.
@@ -155,6 +158,12 @@ func ImageDownload(ctx context.Context, s *state.State, op *operations.Operation
 		}
 
 		// Ensure the resolved fingerprint is valid.
+		err = validateImageFingerprint(fp)
+		if err != nil {
+			return nil, err
+		}
+	} else if args.Fingerprint != "" {
+		fp = args.Fingerprint
 		err = validateImageFingerprint(fp)
 		if err != nil {
 			return nil, err

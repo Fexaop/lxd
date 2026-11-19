@@ -1050,7 +1050,12 @@ test_duplicate_detection() {
   lxc project delete foo
   lxc project delete bar
 
-  [ "$(! "${_LXC}" image alias create testimage "${test_image_fingerprint}" 2>&1 1>/dev/null)" = 'Error: Alias "testimage" already exists' ]
+  if lxc image alias create testimage "${test_image_fingerprint}"; then
+    echo "Duplicate image alias creation unexpectedly succeeded" >&2
+    return 1
+  fi
+  lxc query /1.0/images/container/aliases/testimage | jq --exit-status \
+    --arg target "${test_image_fingerprint}" '.type == "container" and .target == $target'
 
   lxc init foo --empty
   [ "$(! "${_LXC}" init foo --empty 2>&1 1>/dev/null)" = 'Error: Instance "foo" already exists' ]
