@@ -3842,6 +3842,38 @@ HTTP boot follows the enabled network stacks.
 
 These keys require `x86_64` with UEFI firmware and are rejected when `boot.mode=bios`.
 
+(extension-image-alias-types)=
+## `image_alias_types`
+
+Adds support for aliases with the same name for different image types in the same project. An alias name can exist once for a container image and once for a virtual-machine image. The unique key is the project, the name, and the image type.
+
+`{imageType}` in the paths below can be either `container` or `virtual-machine`. MicroVMs do not have their own image type. Since they boot container images, they use `container` aliases.
+Aliases for legacy images published with the `microvm` type are also treated as `container` aliases, including during migration, creation, and target changes.
+The client also treats legacy `microvm` aliases as container aliases when resolving or replacing aliases on older servers.
+On older servers, alias replacement and publish reuse still match by name regardless of image type, because alias names are globally unique within a project.
+
+* `GET /1.0/images/{imageType}/aliases` lists the aliases of the provided image type. With `recursion=1`, each entry includes `type`.
+* `POST /1.0/images/{imageType}/aliases` creates an alias for the provided image type. The target image must be of the same type. The same name may already exist for the other type.
+* `GET`, `PUT`, `PATCH`, `POST`, and `DELETE` on `/1.0/images/{imageType}/aliases/{name}` read or change that one alias. A `PUT` or `PATCH` that points the alias at an image of the other type is rejected.
+
+`GET /1.0/images/{imageType}/aliases/{name}` is the typed alias lookup. No `type` query parameter is added to `/1.0/images/aliases/{name}`.
+Explicitly typed client mutations require this extension; older servers cannot enforce their image-type restriction.
+Creation and rename responses, and image alias lifecycle sources, use typed URLs to identify the affected alias.
+Local image copies resolve aliases using the requested `source.image_type`, or prefer the container alias when no type is specified. Cross-project copies check access to that image and copy its resolved fingerprint without resolving aliases again.
+
+The endpoints without an image type work as follows:
+
+* `/1.0/images/aliases` is unchanged when only one image type uses the name.
+* `POST /1.0/images/aliases` takes the type from the target image. Creating a second alias of that same type returns `409`.
+* `PUT`, `PATCH`, `POST`, and `DELETE` on `/1.0/images/aliases/{name}` return `409` when the name exists for both image types.
+* `GET /1.0/images/aliases/{name}` returns `409` when the name exists for both image types and the caller can view at least one of the aliases or either image is public; otherwise it returns `404` without disclosing the other type.
+* `PUT` and `PATCH` on `/1.0/images/aliases/{name}` may still point an alias to an image of the other type, as before; the alias then moves to that type.
+  The Go client's `UpdateImageAlias` method preserves this behavior; `UpdateImageAliasType` restricts updates to the specified image type.
+* `GET /1.0/images/aliases` without recursion still returns one URL per name. With `recursion=1` it returns one entry per image type.
+
+The authorization entity URL for an image alias now includes the image type: `/1.0/images/{imageType}/aliases/{name}`. `type=` identifies which alias to use when the name exists for both image types. `lxc auth group permission add` requires it for a new permission, while `lxc auth group permission remove` infers it from the group's existing permission when only one exists. The legacy URL `/1.0/images/aliases/{name}` is still accepted for permission changes only when the name exists for one image type.
+Permission references using the legacy URL are resolved to the typed URL before contextual authorization checks.
+
 (extension-instance-microvm)=
 ## `instance_microvm`
 
