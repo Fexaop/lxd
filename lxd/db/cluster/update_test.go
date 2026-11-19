@@ -1272,3 +1272,34 @@ WHERE l.name = ?`, "auto-migrated-002").Scan(&storedCert))
 	require.Equal(t, int64(0), autoUpdateForImage("lxd-source-badcert"))
 	require.Equal(t, int64(0), autoUpdateForImage("direct-source"))
 }
+
+func TestUpdateFromV92ImageAliasTypes(t *testing.T) {
+	db, err := Schema().ExerciseUpdate(93, func(db *sql.DB) {
+		for imageType := 0; imageType <= 2; imageType++ {
+			name := fmt.Sprintf("image-%d", imageType)
+			_, err := db.Exec(`
+INSERT INTO images (fingerprint, filename, size, architecture, upload_date, project_id, type)
+VALUES (?, 'image.tar', 1, 2, '2024-01-01T00:00:00Z', 1, ?)`, name, imageType)
+			require.NoError(t, err)
+			_, err = db.Exec(`
+INSERT INTO images_aliases (name, image_id, description, project_id)
+VALUES (?, (SELECT id FROM images WHERE fingerprint = ?), 'legacy alias', 1)`, name, name)
+			require.NoError(t, err)
+		}
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, db.Close()) }()
+
+	for imageType, want := range []int{0, 1, 0} {
+		name := fmt.Sprintf("image-%d", imageType)
+		var aliasType int
+		var target string
+		err = db.QueryRow(`
+SELECT images_aliases.image_type, images.fingerprint
+FROM images_aliases JOIN images ON images.id = images_aliases.image_id
+WHERE images_aliases.name = ?`, name).Scan(&aliasType, &target)
+		require.NoError(t, err)
+		assert.Equal(t, want, aliasType)
+		assert.Equal(t, name, target)
+	}
+}
